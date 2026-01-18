@@ -34,18 +34,30 @@ jobs:
           curl -L -o "$FILENAME" "${{ inputs.file_url }}"
           echo "filename=$FILENAME" >> $GITHUB_OUTPUT
 
-      - name: Upload to PixelDrain
+      - name: Upload to PixelDrain (API)
         id: upload_pixeldrain
         if: inputs.service == 'pixeldrain'
         run: |
           FILENAME="${{ steps.download.outputs.filename }}"
           
-          # Upload to PixelDrain API
-          RESPONSE=$(curl -s -F "file=@$FILENAME" https://pixeldrain.com/api/file/)
+          echo "Uploading to PixelDrain with Personal Account..."
           
-          # Parse JSON response using simple python
-          LINK=$(echo "$RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['data']['link'])")
-          echo "result_link=https://pixeldrain.com/u/$LINK" >> $GITHUB_OUTPUT
+          # Upload file ke API PixelDrain dengan Header Authorization
+          # -H "Authorization: Bearer ..." memastikan file masuk ke akunmu
+          RESPONSE=$(curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.PIXELDRAIN_API_KEY }}" \
+            -F "file=@$FILENAME" \
+            "https://pixeldrain.com/api/file/")
+          
+          # Parse JSON untuk mengambil ID file
+          ID=$(echo "$RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['value']['id'])")
+          
+          # Generate link publik
+          LINK="https://pixeldrain.com/u/$ID"
+          
+          echo "Upload Successful! ID: $ID"
+          
+          echo "result_link=$LINK" >> $GITHUB_OUTPUT
           echo "service_name=PixelDrain" >> $GITHUB_OUTPUT
 
       - name: Mock Upload to MediaFire (Example)
