@@ -29,39 +29,59 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Download File
+      - name: Validate URL & Download File
         id: download
         run: |
-          echo "Starting download from: ${{ inputs.file_url }}"
+          URL="${{ inputs.file_url }}"
           
-          # Download file menggunakan nama aslinya dari URL (flag -O)
-          curl -L -O "${{ inputs.file_url }}"
+          echo "Checking URL validity..."
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL")
+          echo "Telegram URL Response Code: $HTTP_CODE"
           
-          # Cari file yang baru saja didownload (file terbaru di folder)
-          # Simpan nama file tersebut ke output
-          FILENAME=$(ls -t | head -n1)
-          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
-          echo "✅ Downloaded file: $FILENAME"
+          if [ "$HTTP_CODE" -ne "200" ]; then
+            echo "❌ Error: URL tidak valid atau file sudah kedaluwarsa (Telegram Expired)."
+            exit 1
+          fi
+
+          echo "Downloading file..."
+          # Download ke /tmp dengan nama tetap untuk menghindari masalah path/nama file
+          curl -L -o "/tmp/final_upload" "$URL"
+          
+          echo "Download Complete."
+
+      - name: Verify File
+        run: |
+          FILE="/tmp/final_upload"
+          echo "--- FILE VERIFICATION ---"
+          
+          # Cek apakah file ada
+          if [ ! -f "$FILE" ]; then
+            echo "❌ File tidak ditemukan di /tmp."
+            exit 1
+          fi
+          
+          # Cek ukuran file
+          SIZE=$(wc -c < "$FILE")
+          echo "File Size: $SIZE bytes"
+          
+          if [ "$SIZE" -eq "0" ]; then
+            echo "❌ Error: File berukuran 0 bytes (kosong/gagal download)."
+            exit 1
+          fi
+          echo "--------------------------"
 
       - name: Upload to PixelDrain (API)
         id: upload_pixeldrain
         if: inputs.service == 'pixeldrain'
         run: |
           PK="${{ inputs.pixeldrain_key }}"
-          FILENAME="${{ steps.download.outputs.filename }}"
+          FILE="/tmp/final_upload"
           
           echo "--- UPLOAD PROCESS ---"
-          echo "Uploading file: $FILENAME"
+          echo "Uploading from: $FILE"
           
-          # Verifikasi file ada sebelum upload
-          if [ ! -f "$FILENAME" ]; then
-             echo "❌ ERROR: File '$FILENAME' tidak ditemukan di directory!"
-             exit 1
-          fi
-          
-          # Upload menggunakan nama file yang didapat dari step download
           RESPONSE=$(curl -L -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
-            -T "$FILENAME" \
+            -T "$FILE" \
             -u ":$PK" \
             "https://pixeldrain.com/api/file/")
             
@@ -74,6 +94,9 @@ jobs:
             echo "❌ Upload Failed."
             echo "Server Response:"
             echo "$BODY"
+            echo "-----------------"
+            # Debug tambahan
+            echo "API Key Length: ${#PK}"
             exit 1
           fi
           
