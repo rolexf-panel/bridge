@@ -42,24 +42,39 @@ jobs:
           
           echo "Uploading to PixelDrain with Personal Account..."
           
-          # Upload file ke API PixelDrain dengan Header Authorization
-          # -H "Authorization: Bearer ..." memastikan file masuk ke akunmu
-          RESPONSE=$(curl -s -X POST \
+          # Upload dengan curl, kita juga menangkap HTTP Status Code
+          # -w "\nHTTP_STATUS:%{http_code}" akan menambahkan kode status di akhir respons
+          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
             -H "Authorization: Bearer ${{ secrets.PIXELDRAIN_API_KEY }}" \
             -F "file=@$FILENAME" \
             "https://pixeldrain.com/api/file/")
           
-          # Parse JSON untuk mengambil ID file
-          ID=$(echo "$RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['value']['id'])")
+          # Pisahkan Body dan Status Code
+          HTTP_STATUS=$(echo "$RESPONSE" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
+          BODY=$(echo "$RESPONSE" | sed -e 's/HTTP_STATUS:[0-9]*$//')
           
-          # Generate link publik
+          # Tampilkan Body dan Status untuk debugging (Ini akan muncul di Log GitHub Actions)
+          echo "--- DEBUG INFO ---"
+          echo "HTTP Status Code: $HTTP_STATUS"
+          echo "Response Body:"
+          echo "$BODY"
+          echo "-----------------"
+          
+          # Cek jika status bukan 200 (OK) atau 201 (Created)
+          if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "201" ]; then
+            echo "❌ Upload Gagal! Status code: $HTTP_STATUS"
+            echo "Cek API Key di Secret GitHub kamu."
+            exit 1
+          fi
+          
+          # Jika sukses, baru parse JSON
+          ID=$(echo "$BODY" | python3 -c "import sys, json; print(json.load(sys.stdin)['value']['id'])")
+          
           LINK="https://pixeldrain.com/u/$ID"
-          
-          echo "Upload Successful! ID: $ID"
           
           echo "result_link=$LINK" >> $GITHUB_OUTPUT
           echo "service_name=PixelDrain" >> $GITHUB_OUTPUT
-
+          
       - name: Mock Upload to MediaFire (Example)
         id: upload_mediafire
         if: inputs.service == 'mediafire'
