@@ -45,10 +45,29 @@ jobs:
           
           echo "Final URL: $CLEAN_URL"
           
-          # Download file ke /tmp
-          curl -L -o "/tmp/final_upload" "$CLEAN_URL"
+          # Download file ke /tmp dengan retry mechanism
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            if curl -L --connect-timeout 30 --max-time 600 -o "/tmp/final_upload" "$CLEAN_URL"; then
+              echo "Download berhasil!"
+              break
+            else
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              echo "Download gagal, retry $RETRY_COUNT dari $MAX_RETRIES..."
+              sleep 2
+            fi
+          done
+          
+          if [ ! -f "/tmp/final_upload" ]; then
+            echo "❌ Download gagal setelah $MAX_RETRIES percobaan"
+            exit 1
+          fi
+          
+          FILE_SIZE=$(stat -f%z "/tmp/final_upload" 2>/dev/null || stat -c%s "/tmp/final_upload")
+          echo "File size: $FILE_SIZE bytes"
 
-      - name: Upload to PixelDrain (Final Version)
+      - name: Upload to PixelDrain
         id: upload_pixeldrain
         if: inputs.service == 'pixeldrain'
         run: |
@@ -59,47 +78,56 @@ jobs:
           PK=$(echo "$PK" | xargs)
           
           FILE="/tmp/final_upload"
-          UPLOAD_SUCCESS="false"
           
-          # --- ATTEMPT 1: PYTHON REQUESTS ---
-          echo "[Attempt 1] Uploading using Python Requests..."
-          RESP=$(python3 -c "import requests, sys, json; r=requests.post('https://pixeldrain.com/api/file/', auth=('', '$PK'), files={'file': open('$FILE', 'rb')}); print('OK|'+r.text if r.status_code==201 else 'FAIL')" 2>&1)
+          # Upload menggunakan Python untuk reliability yang lebih baik
+          cat > /tmp/upload_script.py << 'EOFPYTHON'
+          import requests
+          import sys
+          import json
           
-          if [[ "$RESP" == OK* ]]; then
-            UPLOAD_SUCCESS="true"
-            JSON_RESP="${RESP#*|}"
-            echo "✅ Python Method Succeeded."
+          api_key = sys.argv[1]
+          file_path = sys.argv[2]
+          
+          try:
+              with open(file_path, 'rb') as f:
+                  response = requests.post(
+                      'https://pixeldrain.com/api/file/',
+                      auth=('', api_key),
+                      files={'file': f},
+                      timeout=600
+                  )
+              
+              if response.status_code == 201:
+                  data = response.json()
+                  file_id = data.get('id', '')
+                  if file_id:
+                      print(f"SUCCESS|{file_id}")
+                  else:
+                      print(f"ERROR|No ID in response: {response.text}")
+                      sys.exit(1)
+              else:
+                  print(f"ERROR|Status {response.status_code}: {response.text}")
+                  sys.exit(1)
+          except Exception as e:
+              print(f"ERROR|Exception: {str(e)}")
+              sys.exit(1)
+          EOFPYTHON
+          
+          # Jalankan script
+          RESULT=$(python3 /tmp/upload_script.py "$PK" "$FILE")
+          
+          if [[ "$RESULT" == SUCCESS* ]]; then
+            ID="${RESULT#*|}"
+            LINK="https://pixeldrain.com/u/$ID"
+            echo "result_link=$LINK" >> $GITHUB_OUTPUT
+            echo "service_name=PixelDrain" >> $GITHUB_OUTPUT
+            echo "✅ Upload berhasil: $LINK"
           else
-            # --- ATTEMPT 2: CURL ---
-            echo "[Attempt 2] Python Failed. Trying Curl..."
-            RESP=$(curl -L -s -w "\nSTATUS:%{http_code}" -X POST -T "$FILE" -u ":$PK" "https://pixeldrain.com/api/file/")
-            CODE=$(echo "$RESP" | grep -o 'STATUS:[0-9]*' | cut -d: -f2)
-            if [ "$CODE" == "201" ]; then
-              UPLOAD_SUCCESS="true"
-              JSON_RESP=$(echo "$RESP" | sed -e 's/STATUS:[0-9]*$//')
-              echo "✅ Curl Method Succeeded."
-            else
-              echo "❌ All upload methods failed."
-              echo "Status Code: $CODE"
-            fi
-          fi
-          
-          # --- FINAL PARSING ---
-          if [ "$UPLOAD_SUCCESS" == "true" ]; then
-            ID=$(echo "$JSON_RESP" | python3 -c "import sys, json; print(json.load(sys.stdin).get('value',{}).get('id',''))")
-            if [ -n "$ID" ]; then
-              LINK="https://pixeldrain.com/u/$ID"
-              echo "result_link=$LINK" >> $GITHUB_OUTPUT
-              echo "service_name=PixelDrain" >> $GITHUB_OUTPUT
-            else
-              echo "❌ Error parsing ID from JSON response."
-              exit 1
-            fi
-          else
+            echo "❌ Upload gagal: $RESULT"
             exit 1
           fi
 
-      - name: Mock Upload to MediaFire (Example)
+      - name: Mock Upload to MediaFire
         id: upload_mediafire
         if: inputs.service == 'mediafire'
         run: |
@@ -107,7 +135,7 @@ jobs:
           echo "result_link=https://www.mediafire.com/file/dummy/file.zip" >> $GITHUB_OUTPUT
           echo "service_name=MediaFire" >> $GITHUB_OUTPUT
 
-      - name: Mock Upload to GDrive (Example)
+      - name: Mock Upload to GDrive
         id: upload_gdrive
         if: inputs.service == 'gdrive'
         run: |
@@ -121,15 +149,24 @@ jobs:
           TOKEN="${{ inputs.telegram_token }}"
           CHAT_ID="${{ inputs.chat_id }}"
           
-          if [ "${{ inputs.service }}" == "pixeldrain" ]; then
-             LINK="${{ steps.upload_pixeldrain.outputs.result_link }}"
-             MSG="✅ Upload Successful to PixelDrain%0A%0ALink: $LINK"
-          elif [ "${{ inputs.service }}" == "mediafire" ]; then
-             LINK="${{ steps.upload_mediafire.outputs.result_link }}"
-             MSG="✅ Mock Upload to MediaFire"
+          # Cek apakah upload berhasil
+          if [ "${{ job.status }}" == "success" ]; then
+            if [ "${{ inputs.service }}" == "pixeldrain" ]; then
+               LINK="${{ steps.upload_pixeldrain.outputs.result_link }}"
+               SERVICE="${{ steps.upload_pixeldrain.outputs.service_name }}"
+               MSG="✅ Upload Berhasil ke $SERVICE%0A%0A🔗 Link: $LINK"
+            elif [ "${{ inputs.service }}" == "mediafire" ]; then
+               LINK="${{ steps.upload_mediafire.outputs.result_link }}"
+               MSG="✅ Mock Upload ke MediaFire%0A%0A🔗 Link: $LINK"
+            else
+               LINK="${{ steps.upload_gdrive.outputs.result_link }}"
+               MSG="✅ Mock Upload ke Google Drive%0A%0A🔗 Link: $LINK"
+            fi
           else
-             LINK="${{ steps.upload_gdrive.outputs.result_link }}"
-             MSG="✅ Mock Upload to GDrive"
+            MSG="❌ Upload gagal. Silakan coba lagi atau periksa logs di GitHub Actions."
           fi
           
-          curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d chat_id=$CHAT_ID -d text="$MSG"
+          curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+            -d chat_id=$CHAT_ID \
+            -d text="$MSG" \
+            -d parse_mode="HTML"
