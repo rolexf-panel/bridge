@@ -18,12 +18,39 @@ on:
       pixeldrain_key:
         description: 'PixelDrain Key from VPS'
         required: true
+      filename:
+        description: 'Original filename'
+        required: true
+      file_type:
+        description: 'File type (document/photo/video/link)'
+        required: true
+      message_id:
+        description: 'Message ID for status updates'
+        required: true
 
 jobs:
   upload_and_notify:
     runs-on: ubuntu-latest
     
     steps:
+      - name: Send Download Status
+        run: |
+          TOKEN="${{ inputs.telegram_token }}"
+          CHAT_ID="${{ inputs.chat_id }}"
+          MSG_ID="${{ inputs.message_id }}"
+          
+          MSG="⏬ *Downloading...*%0A%0A"
+          MSG="${MSG}📄 File: \`${{ inputs.filename }}\`%0A"
+          MSG="${MSG}📦 Type: ${{ inputs.file_type }}%0A"
+          MSG="${MSG}🎯 Destination: ${{ inputs.service }}%0A%0A"
+          MSG="${MSG}▰▰▰▱▱▱▱▱▱▱ 30%%"
+          
+          curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
+            -d chat_id=$CHAT_ID \
+            -d message_id=$MSG_ID \
+            -d text="$MSG" \
+            -d parse_mode="Markdown"
+
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
@@ -33,7 +60,10 @@ jobs:
         id: download
         run: |
           RAW_URL="${{ inputs.file_url }}"
+          FILENAME="${{ inputs.filename }}"
+          
           echo "Raw URL: $RAW_URL"
+          echo "Filename: $FILENAME"
           
           # Bersihkan URL ganda (jika ada)
           if [[ "$RAW_URL" == *"https://"*"https://"* ]]; then
@@ -45,27 +75,50 @@ jobs:
           
           echo "Final URL: $CLEAN_URL"
           
-          # Download file ke /tmp dengan retry mechanism
+          # Download file dengan nama asli
+          OUTPUT_FILE="/tmp/$FILENAME"
+          
           MAX_RETRIES=3
           RETRY_COUNT=0
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            if curl -L --connect-timeout 30 --max-time 600 -o "/tmp/final_upload" "$CLEAN_URL"; then
-              echo "Download berhasil!"
+            if curl -L --connect-timeout 30 --max-time 600 -o "$OUTPUT_FILE" "$CLEAN_URL"; then
+              echo "✅ Download berhasil!"
               break
             else
               RETRY_COUNT=$((RETRY_COUNT + 1))
-              echo "Download gagal, retry $RETRY_COUNT dari $MAX_RETRIES..."
+              echo "⚠️ Download gagal, retry $RETRY_COUNT dari $MAX_RETRIES..."
               sleep 2
             fi
           done
           
-          if [ ! -f "/tmp/final_upload" ]; then
+          if [ ! -f "$OUTPUT_FILE" ]; then
             echo "❌ Download gagal setelah $MAX_RETRIES percobaan"
             exit 1
           fi
           
-          FILE_SIZE=$(stat -f%z "/tmp/final_upload" 2>/dev/null || stat -c%s "/tmp/final_upload")
-          echo "File size: $FILE_SIZE bytes"
+          FILE_SIZE=$(stat -f%z "$OUTPUT_FILE" 2>/dev/null || stat -c%s "$OUTPUT_FILE")
+          FILE_SIZE_MB=$(echo "scale=2; $FILE_SIZE / 1024 / 1024" | bc)
+          echo "File size: $FILE_SIZE bytes ($FILE_SIZE_MB MB)"
+          echo "file_path=$OUTPUT_FILE" >> $GITHUB_OUTPUT
+          echo "file_size_mb=$FILE_SIZE_MB" >> $GITHUB_OUTPUT
+
+      - name: Send Upload Status
+        run: |
+          TOKEN="${{ inputs.telegram_token }}"
+          CHAT_ID="${{ inputs.chat_id }}"
+          MSG_ID="${{ inputs.message_id }}"
+          
+          MSG="⏫ *Uploading to ${{ inputs.service }}...*%0A%0A"
+          MSG="${MSG}📄 File: \`${{ inputs.filename }}\`%0A"
+          MSG="${MSG}📦 Type: ${{ inputs.file_type }}%0A"
+          MSG="${MSG}💾 Size: ${{ steps.download.outputs.file_size_mb }} MB%0A%0A"
+          MSG="${MSG}▰▰▰▰▰▰▰▱▱▱ 70%%"
+          
+          curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
+            -d chat_id=$CHAT_ID \
+            -d message_id=$MSG_ID \
+            -d text="$MSG" \
+            -d parse_mode="Markdown"
 
       - name: Upload to PixelDrain
         id: upload_pixeldrain
@@ -74,26 +127,29 @@ jobs:
           pip install requests > /dev/null 2>&1
           
           PK="${{ inputs.pixeldrain_key }}"
-          # Hapus spasi/enter di akhir API Key
           PK=$(echo "$PK" | xargs)
           
-          FILE="/tmp/final_upload"
+          FILE="${{ steps.download.outputs.file_path }}"
+          FILENAME="${{ inputs.filename }}"
           
-          # Upload menggunakan Python untuk reliability yang lebih baik
+          # Upload dengan nama file asli
           cat > /tmp/upload_script.py << 'EOFPYTHON'
           import requests
           import sys
-          import json
+          import os
           
           api_key = sys.argv[1]
           file_path = sys.argv[2]
+          original_name = sys.argv[3]
           
           try:
               with open(file_path, 'rb') as f:
+                  # Upload dengan nama asli
+                  files = {'file': (original_name, f)}
                   response = requests.post(
                       'https://pixeldrain.com/api/file/',
                       auth=('', api_key),
-                      files={'file': f},
+                      files=files,
                       timeout=600
                   )
               
@@ -113,8 +169,7 @@ jobs:
               sys.exit(1)
           EOFPYTHON
           
-          # Jalankan script
-          RESULT=$(python3 /tmp/upload_script.py "$PK" "$FILE")
+          RESULT=$(python3 /tmp/upload_script.py "$PK" "$FILE" "$FILENAME")
           
           if [[ "$RESULT" == SUCCESS* ]]; then
             ID="${RESULT#*|}"
@@ -148,25 +203,38 @@ jobs:
         run: |
           TOKEN="${{ inputs.telegram_token }}"
           CHAT_ID="${{ inputs.chat_id }}"
+          MSG_ID="${{ inputs.message_id }}"
           
-          # Cek apakah upload berhasil
           if [ "${{ job.status }}" == "success" ]; then
             if [ "${{ inputs.service }}" == "pixeldrain" ]; then
                LINK="${{ steps.upload_pixeldrain.outputs.result_link }}"
                SERVICE="${{ steps.upload_pixeldrain.outputs.service_name }}"
-               MSG="✅ Upload Berhasil ke $SERVICE%0A%0A🔗 Link: $LINK"
             elif [ "${{ inputs.service }}" == "mediafire" ]; then
                LINK="${{ steps.upload_mediafire.outputs.result_link }}"
-               MSG="✅ Mock Upload ke MediaFire%0A%0A🔗 Link: $LINK"
+               SERVICE="MediaFire"
             else
                LINK="${{ steps.upload_gdrive.outputs.result_link }}"
-               MSG="✅ Mock Upload ke Google Drive%0A%0A🔗 Link: $LINK"
+               SERVICE="Google Drive"
             fi
+            
+            MSG="✅ *Upload Complete!*%0A%0A"
+            MSG="${MSG}📄 File: \`${{ inputs.filename }}\`%0A"
+            MSG="${MSG}📦 Type: ${{ inputs.file_type }}%0A"
+            MSG="${MSG}💾 Size: ${{ steps.download.outputs.file_size_mb }} MB%0A"
+            MSG="${MSG}☁️ Service: $SERVICE%0A%0A"
+            MSG="${MSG}🔗 [Download Link]($LINK)%0A%0A"
+            MSG="${MSG}▰▰▰▰▰▰▰▰▰▰ 100%%"
           else
-            MSG="❌ Upload gagal. Silakan coba lagi atau periksa logs di GitHub Actions."
+            MSG="❌ *Upload Failed*%0A%0A"
+            MSG="${MSG}📄 File: \`${{ inputs.filename }}\`%0A"
+            MSG="${MSG}📦 Type: ${{ inputs.file_type }}%0A"
+            MSG="${MSG}☁️ Service: ${{ inputs.service }}%0A%0A"
+            MSG="${MSG}Please try again or check logs."
           fi
           
-          curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+          curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d chat_id=$CHAT_ID \
+            -d message_id=$MSG_ID \
             -d text="$MSG" \
-            -d parse_mode="HTML"
+            -d parse_mode="Markdown" \
+            -d disable_web_page_preview=false
