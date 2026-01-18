@@ -35,7 +35,7 @@ jobs:
           RAW_URL="${{ inputs.file_url }}"
           echo "Raw URL: $RAW_URL"
           
-          # Bersihkan URL ganda
+          # Bersihkan URL ganda (jika ada)
           if [[ "$RAW_URL" == *"https://"*"https://"* ]]; then
              echo "Fixing Double URL..."
              CLEAN_URL=$(python3 -c "import sys; u=sys.argv[1]; print('https://' + u.split('https://')[-1])" "$RAW_URL")
@@ -45,103 +45,57 @@ jobs:
           
           echo "Final URL: $CLEAN_URL"
           
-          # Download file
+          # Download file ke /tmp
           curl -L -o "/tmp/final_upload" "$CLEAN_URL"
 
-      - name: Upload to PixelDrain (Python + Curl Fallback)
+      - name: Upload to PixelDrain (Final Version)
         id: upload_pixeldrain
         if: inputs.service == 'pixeldrain'
         run: |
           pip install requests > /dev/null 2>&1
           
           PK="${{ inputs.pixeldrain_key }}"
+          # Hapus spasi/enter di akhir API Key
           PK=$(echo "$PK" | xargs)
+          
           FILE="/tmp/final_upload"
-          
-          echo "====================================="
-          echo "Starting PixelDrain Upload..."
-          echo "API Key: ${PK:0:8}..."
-          echo "====================================="
-          
-          # VARIABEL STATUS
           UPLOAD_SUCCESS="false"
-          JSON_RESP=""
           
-          # --- METODE 1: PYTHON REQUESTS ---
-          echo "[Attempt 1] Using Python Requests..."
-          RESP=$(python3 -c "
-import requests, sys, json
-try:
-    with open('$FILE', 'rb') as f:
-        r = requests.post('https://pixeldrain.com/api/file/', auth=('', '$PK'), files={'file': f})
-    
-    if r.status_code == 201:
-        print('OK|' + r.text)
-    else:
-        print(f'ERR|Code {r.status_code}')
-except Exception as e:
-    print(f'ERR|Exception {str(e)}')
-" 2>&1)
+          # --- ATTEMPT 1: PYTHON REQUESTS ---
+          echo "[Attempt 1] Uploading using Python Requests..."
+          RESP=$(python3 -c "import requests, sys, json; r=requests.post('https://pixeldrain.com/api/file/', auth=('', '$PK'), files={'file': open('$FILE', 'rb')}); print('OK|'+r.text if r.status_code==201 else 'FAIL')" 2>&1)
           
-          STATUS=$(echo "$RESP" | cut -d'|' -f1)
-          if [ "$STATUS" == "OK" ]; then
+          if [[ "$RESP" == OK* ]]; then
             UPLOAD_SUCCESS="true"
-            JSON_RESP=$(echo "$RESP" | cut -d'|' -f2-)
+            JSON_RESP="${RESP#*|}"
             echo "✅ Python Method Succeeded."
           else
-            echo "❌ Python Method Failed: $(echo "$RESP" | cut -d'|' -f2)"
-          fi
-          
-          # --- METODE 2: CURL RAW (Fallback) ---
-          if [ "$UPLOAD_SUCCESS" == "false" ]; then
-            echo "[Attempt 2] Using Curl..."
-            
-            RESP=$(curl -L -s -w "\nSTATUS_CODE:%{http_code}" -X POST \
-              -T "$FILE" \
-              -u ":$PK" \
-              "https://pixeldrain.com/api/file/")
-              
-            CODE=$(echo "$RESP" | grep -o 'STATUS_CODE:[0-9]*' | cut -d: -f2)
-            BODY=$(echo "$RESP" | sed -e 's/STATUS_CODE:[0-9]*$//')
-            
+            # --- ATTEMPT 2: CURL ---
+            echo "[Attempt 2] Python Failed. Trying Curl..."
+            RESP=$(curl -L -s -w "\nSTATUS:%{http_code}" -X POST -T "$FILE" -u ":$PK" "https://pixeldrain.com/api/file/")
+            CODE=$(echo "$RESP" | grep -o 'STATUS:[0-9]*' | cut -d: -f2)
             if [ "$CODE" == "201" ]; then
               UPLOAD_SUCCESS="true"
-              JSON_RESP="$BODY"
+              JSON_RESP=$(echo "$RESP" | sed -e 's/STATUS:[0-9]*$//')
               echo "✅ Curl Method Succeeded."
             else
-              echo "❌ Curl Method Failed. Code: $CODE"
+              echo "❌ All upload methods failed."
+              echo "Status Code: $CODE"
             fi
           fi
           
-          # --- FINAL RESULT & PARSING ---
+          # --- FINAL PARSING ---
           if [ "$UPLOAD_SUCCESS" == "true" ]; then
-            echo "JSON Response: $JSON_RESP"
-            
-            # Ekstrak ID dengan aman menggunakan .get()
-            ID=$(echo "$JSON_RESP" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    print(d.get('value', {}).get('id', ''))
-except:
-    print('')
-")
-            
+            ID=$(echo "$JSON_RESP" | python3 -c "import sys, json; print(json.load(sys.stdin).get('value',{}).get('id',''))")
             if [ -n "$ID" ]; then
               LINK="https://pixeldrain.com/u/$ID"
-              echo "====================================="
-              echo "✅ UPLOAD FINAL SUCCESS!"
-              echo "Link: $LINK"
-              echo "====================================="
-              
               echo "result_link=$LINK" >> $GITHUB_OUTPUT
               echo "service_name=PixelDrain" >> $GITHUB_OUTPUT
             else
-              echo "❌ Error: Could not parse ID from response."
+              echo "❌ Error parsing ID from JSON response."
               exit 1
             fi
           else
-            echo "❌ CRITICAL: All upload methods failed."
             exit 1
           fi
 
@@ -150,7 +104,7 @@ except:
         if: inputs.service == 'mediafire'
         run: |
           echo "Mocking MediaFire Upload..."
-          echo "result_link=https://www.mediafire.com/file/dummy/example/file.zip" >> $GITHUB_OUTPUT
+          echo "result_link=https://www.mediafire.com/file/dummy/file.zip" >> $GITHUB_OUTPUT
           echo "service_name=MediaFire" >> $GITHUB_OUTPUT
 
       - name: Mock Upload to GDrive (Example)
@@ -169,21 +123,13 @@ except:
           
           if [ "${{ inputs.service }}" == "pixeldrain" ]; then
              LINK="${{ steps.upload_pixeldrain.outputs.result_link }}"
-             if [ -z "$LINK" ]; then
-                MSG="❌ Upload Failed. Check Action logs."
-             else
-                MSG="✅ Upload Successful to PixelDrain%0A%0ALink: $LINK"
-             fi
-             
+             MSG="✅ Upload Successful to PixelDrain%0A%0ALink: $LINK"
           elif [ "${{ inputs.service }}" == "mediafire" ]; then
              LINK="${{ steps.upload_mediafire.outputs.result_link }}"
-             MSG="✅ Upload Successful to MediaFire%0A%0ALink: $LINK"
-             
-          elif [ "${{ inputs.service }}" == "gdrive" ]; then
-             LINK="${{ steps.upload_gdrive.outputs.result_link }}"
-             MSG="✅ Upload Successful to Google Drive%0A%0ALink: $LINK"
+             MSG="✅ Mock Upload to MediaFire"
           else
-             MSG="❌ Unknown service."
+             LINK="${{ steps.upload_gdrive.outputs.result_link }}"
+             MSG="✅ Mock Upload to GDrive"
           fi
           
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d chat_id=$CHAT_ID -d text="$MSG"
