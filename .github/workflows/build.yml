@@ -39,10 +39,11 @@ jobs:
           CHAT_ID="${{ inputs.chat_id }}"
           MSG_ID="${{ inputs.message_id }}"
           
-          MSG="⏬ *Downloading...*%0A%0A"
+          MSG="⏬ *Upload Status*%0A%0A"
           MSG="${MSG}📄 File: \`${{ inputs.filename }}\`%0A"
           MSG="${MSG}📦 Type: ${{ inputs.file_type }}%0A"
           MSG="${MSG}🎯 Destination: ${{ inputs.service }}%0A%0A"
+          MSG="${MSG}📊 *Current Status:* Downloading from source%0A"
           MSG="${MSG}▰▰▰▱▱▱▱▱▱▱ 30%%"
           
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
@@ -108,10 +109,11 @@ jobs:
           CHAT_ID="${{ inputs.chat_id }}"
           MSG_ID="${{ inputs.message_id }}"
           
-          MSG="⏫ *Uploading to ${{ inputs.service }}...*%0A%0A"
+          MSG="⏫ *Upload Status*%0A%0A"
           MSG="${MSG}📄 File: \`${{ inputs.filename }}\`%0A"
           MSG="${MSG}📦 Type: ${{ inputs.file_type }}%0A"
           MSG="${MSG}💾 Size: ${{ steps.download.outputs.file_size_mb }} MB%0A%0A"
+          MSG="${MSG}📊 *Current Status:* Uploading to ${{ inputs.service }}%0A"
           MSG="${MSG}▰▰▰▰▰▰▰▱▱▱ 70%%"
           
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
@@ -217,18 +219,20 @@ jobs:
                SERVICE="Google Drive"
             fi
             
-            MSG="✅ *Upload Complete!*%0A%0A"
+            MSG="✅ *Upload Status*%0A%0A"
             MSG="${MSG}📄 File: \`${{ inputs.filename }}\`%0A"
             MSG="${MSG}📦 Type: ${{ inputs.file_type }}%0A"
             MSG="${MSG}💾 Size: ${{ steps.download.outputs.file_size_mb }} MB%0A"
             MSG="${MSG}☁️ Service: $SERVICE%0A%0A"
-            MSG="${MSG}🔗 [Download Link]($LINK)%0A%0A"
-            MSG="${MSG}▰▰▰▰▰▰▰▰▰▰ 100%%"
+            MSG="${MSG}📊 *Current Status:* Complete!%0A"
+            MSG="${MSG}▰▰▰▰▰▰▰▰▰▰ 100%%%0A%0A"
+            MSG="${MSG}🔗 [Download Link]($LINK)"
           else
-            MSG="❌ *Upload Failed*%0A%0A"
+            MSG="❌ *Upload Status*%0A%0A"
             MSG="${MSG}📄 File: \`${{ inputs.filename }}\`%0A"
             MSG="${MSG}📦 Type: ${{ inputs.file_type }}%0A"
             MSG="${MSG}☁️ Service: ${{ inputs.service }}%0A%0A"
+            MSG="${MSG}📊 *Current Status:* Failed%0A"
             MSG="${MSG}Please try again or check logs."
           fi
           
