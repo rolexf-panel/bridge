@@ -29,10 +29,24 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Validate URL & Download File
+      - name: Sanitize & Download File
         id: download
         run: |
-          URL="${{ inputs.file_url }}"
+          RAW_URL="${{ inputs.file_url }}"
+          echo "Raw URL from VPS: $RAW_URL"
+          
+          # SANITASI URL OTOMATIS
+          # Jika URL mengandung "https://" dua kali, ambil bagian terakhir saja
+          if [[ "$RAW_URL" == *"https://"*"https://"* ]]; then
+             echo "⚠️ Terdeteksi URL Ganda. Melakukan pembersihan..."
+             # Menggunakan python untuk memisahkan dan mengambil bagian terakhir
+             CLEAN_URL=$(python3 -c "import sys; u=sys.argv[1]; print('https://' + u.split('https://')[-1])" "$RAW_URL")
+          else
+             CLEAN_URL="$RAW_URL"
+          fi
+          
+          URL="$CLEAN_URL"
+          echo "Final URL to Download: $URL"
           
           echo "Checking URL validity..."
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL")
@@ -43,10 +57,8 @@ jobs:
             exit 1
           fi
 
-          echo "Downloading file..."
-          # Download ke /tmp dengan nama tetap untuk menghindari masalah path/nama file
+          echo "Downloading file to /tmp/final_upload..."
           curl -L -o "/tmp/final_upload" "$URL"
-          
           echo "Download Complete."
 
       - name: Verify File
@@ -54,13 +66,11 @@ jobs:
           FILE="/tmp/final_upload"
           echo "--- FILE VERIFICATION ---"
           
-          # Cek apakah file ada
           if [ ! -f "$FILE" ]; then
             echo "❌ File tidak ditemukan di /tmp."
             exit 1
           fi
           
-          # Cek ukuran file
           SIZE=$(wc -c < "$FILE")
           echo "File Size: $SIZE bytes"
           
@@ -78,7 +88,6 @@ jobs:
           FILE="/tmp/final_upload"
           
           echo "--- UPLOAD PROCESS ---"
-          echo "Uploading from: $FILE"
           
           RESPONSE=$(curl -L -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
             -T "$FILE" \
@@ -94,9 +103,6 @@ jobs:
             echo "❌ Upload Failed."
             echo "Server Response:"
             echo "$BODY"
-            echo "-----------------"
-            # Debug tambahan
-            echo "API Key Length: ${#PK}"
             exit 1
           fi
           
