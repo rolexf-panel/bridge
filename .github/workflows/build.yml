@@ -7,7 +7,7 @@ on:
         description: 'File URL from Telegram'
         required: true
       service:
-        description: 'Destination service (pixeldrain, mediafire, gdrive)'
+        description: 'Destination service'
         required: true
       chat_id:
         description: 'Telegram Chat ID'
@@ -28,168 +28,53 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-          # Install requests library untuk Metode 3
-        run: pip install requests
 
       - name: Sanitize & Download File
         id: download
         run: |
           RAW_URL="${{ inputs.file_url }}"
-          echo "Raw URL: $RAW_URL"
-          
-          # Bersihkan URL ganda
+          # Fix double URL
           if [[ "$RAW_URL" == *"https://"*"https://"* ]]; then
-             echo "Fixing Double URL..."
              CLEAN_URL=$(python3 -c "import sys; u=sys.argv[1]; print('https://' + u.split('https://')[-1])" "$RAW_URL")
           else
              CLEAN_URL="$RAW_URL"
           fi
-          
-          URL="$CLEAN_URL"
-          echo "Final URL: $URL"
-          
-          echo "Downloading..."
-          curl -L -o "/tmp/final_upload" "$URL"
+          curl -L -o "/tmp/final_upload" "$CLEAN_URL"
 
-      - name: Upload to PixelDrain (Multi-Method Fallback)
+      - name: Upload to PixelDrain (Multi-Method)
         id: upload_pixeldrain
         if: inputs.service == 'pixeldrain'
         run: |
-          FILE="/tmp/final_upload"
+          pip install requests > /dev/null
           PK="${{ inputs.pixeldrain_key }}"
-          
-          # Bersihkan API Key
           PK=$(echo "$PK" | xargs)
-          
-          echo "=========================================="
-          echo "UPLOAD STRATEGY: Trying Multiple Methods"
-          echo "=========================================="
-          echo "API Key: ${PK:0:8}..."
-          echo "File Size: $(wc -c < "$FILE") bytes"
-          
+          FILE="/tmp/final_upload"
           SUCCESS="NO"
-          LINK=""
-          BODY=""
-          HTTP_CODE="0"
-
-          # --- METODE 1: CURL RAW (-T) ---
-          echo "[1/3] Trying Method 1: Curl Raw Upload (Documentation Standard)..."
+          
+          # Method 1: Curl Raw
           RESP=$(curl -L -s -w "\nHTTP_STATUS:%{http_code}" -X POST -T "$FILE" -u ":$PK" "https://pixeldrain.com/api/file/")
           CODE=$(echo "$RESP" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
+          if [ "$CODE" == "201" ]; then SUCCESS="YES"; BODY=$(echo "$RESP" | sed -e 's/HTTP_STATUS:[0-9]*$//'); fi
+
+          # Method 2: Python Requests
+          if [ "$SUCCESS" == "NO" ]; then
+            RESP=$(python3 -c "import requests; r=requests.post('https://pixeldrain.com/api/file/', auth=('', '$PK'), files={'file': open('/tmp/final_upload', 'rb')}); print(r.text if r.status_code==201 else 'FAIL')" 2>&1)
+            if [ "$RESP" != "FAIL" ]; then SUCCESS="YES"; BODY="$RESP"; fi
+          fi
           
-          if [ "$CODE" == "201" ]; then
-            echo "✅ Method 1 SUCCESS!"
-            BODY=$(echo "$RESP" | sed -e 's/HTTP_STATUS:[0-9]*$//')
-            SUCCESS="YES"
-          else
-            echo "❌ Method 1 Failed (Status $CODE)."
-          fi
-
-          # --- METODE 2: CURL MULTIPART (-F) ---
-          if [ "$SUCCESS" == "NO" ]; then
-            echo "[2/3] Trying Method 2: Curl Multipart Form..."
-            RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST -F "file=@$FILE" -u ":$PK" "https://pixeldrain.com/api/file/")
-            CODE=$(echo "$RESP" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
-            
-            if [ "$CODE" == "201" ]; then
-              echo "✅ Method 2 SUCCESS!"
-              BODY=$(echo "$RESP" | sed -e 's/HTTP_STATUS:[0-9]*$//')
-              SUCCESS="YES"
-            else
-              echo "❌ Method 2 Failed (Status $CODE)."
-            fi
-          fi
-
-          # --- METODE 3: PYTHON SCRIPT ---
-          if [ "$SUCCESS" == "NO" ]; then
-            echo "[3/3] Trying Method 3: Python Requests..."
-            # Script python inline
-            PYTHON_OUTPUT=$(python3 <<EOF
-import requests
-import sys
-try:
-    with open('/tmp/final_upload', 'rb') as f:
-        r = requests.post('https://pixeldrain.com/api/file/', auth=('', '$PK'), files={'file': f})
-    if r.status_code == 201:
-        print(f"OK|{r.text}")
-    else:
-        print(f"FAIL|{r.status_code}|{r.text}")
-except Exception as e:
-    print(f"ERROR|{str(e)}")
-EOF
-            )
-            
-            # Parse output python
-            RES_STATUS=$(echo "$PYTHON_OUTPUT" | cut -d'|' -f1)
-            
-            if [ "$RES_STATUS" == "OK" ]; then
-              echo "✅ Method 3 SUCCESS!"
-              BODY=$(echo "$PYTHON_OUTPUT" | cut -d'|' -f2)
-              SUCCESS="YES"
-            else
-              echo "❌ Method 3 Failed."
-              BODY=$(echo "$PYTHON_OUTPUT" | cut -d'|' -f3)
-            fi
-          fi
-
-          # --- FINAL VALIDASI ---
           if [ "$SUCCESS" == "YES" ]; then
-            ID=$(echo "$BODY" | python3 -c "import sys, json; print(json.load(sys.stdin)['value']['id'])")
-            LINK="https://pixeldrain.com/u/$ID"
-            echo "=========================================="
-            echo "✅ UPLOAD BERHASIL!"
-            echo "Link: $LINK"
-            echo "=========================================="
-            
-            echo "result_link=$LINK" >> $GITHUB_OUTPUT
-            echo "service_name=PixelDrain" >> $GITHUB_OUTPUT
+             ID=$(echo "$BODY" | python3 -c "import sys, json; print(json.load(sys.stdin)['value']['id'])")
+             LINK="https://pixeldrain.com/u/$ID"
+             echo "result_link=$LINK" >> $GITHUB_OUTPUT
+             echo "service_name=PixelDrain" >> $GITHUB_OUTPUT
           else
-            echo "=========================================="
-            echo "❌ ALL METHODS FAILED."
-            echo "Last Error Body: $BODY"
-            echo "=========================================="
-            exit 1
+             echo "Upload Failed"; exit 1
           fi
-
-      - name: Mock Upload to MediaFire (Example)
-        id: upload_mediafire
-        if: inputs.service == 'mediafire'
-        run: |
-          echo "Mocking MediaFire Upload..."
-          echo "result_link=https://www.mediafire.com/file/dummy/example/file.zip" >> $GITHUB_OUTPUT
-          echo "service_name=MediaFire" >> $GITHUB_OUTPUT
-
-      - name: Mock Upload to GDrive (Example)
-        id: upload_gdrive
-        if: inputs.service == 'gdrive'
-        run: |
-          echo "Mocking GDrive Upload..."
-          echo "result_link=https://drive.google.com/file/d/dummy123/view" >> $GITHUB_OUTPUT
-          echo "service_name=Google Drive" >> $GITHUB_OUTPUT
 
       - name: Send Result to Telegram
         if: always()
         run: |
           TOKEN="${{ inputs.telegram_token }}"
-          CHAT_ID="${{ inputs.chat_id }}"
-          
-          if [ "${{ inputs.service }}" == "pixeldrain" ]; then
-             LINK="${{ steps.upload_pixeldrain.outputs.result_link }}"
-             if [ -z "$LINK" ]; then
-                MSG="❌ Upload to PixelDrain Failed. All 3 methods failed."
-             else
-                MSG="✅ Upload Successful to PixelDrain%0A%0ALink: $LINK"
-             fi
-             
-          elif [ "${{ inputs.service }}" == "mediafire" ]; then
-             LINK="${{ steps.upload_mediafire.outputs.result_link }}"
-             MSG="✅ Upload Successful to MediaFire%0A%0ALink: $LINK"
-             
-          elif [ "${{ inputs.service }}" == "gdrive" ]; then
-             LINK="${{ steps.upload_gdrive.outputs.result_link }}"
-             MSG="✅ Upload Successful to Google Drive%0A%0ALink: $LINK"
-          else
-             MSG="❌ Unknown service."
-          fi
-          
-          curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d chat_id=$CHAT_ID -d text="$MSG"
+          LINK="${{ steps.upload_pixeldrain.outputs.result_link }}"
+          MSG="Result: $LINK"
+          curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d chat_id="${{ inputs.chat_id }}" -d text="$MSG"
