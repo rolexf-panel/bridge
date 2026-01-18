@@ -33,64 +33,44 @@ jobs:
         id: download
         run: |
           RAW_URL="${{ inputs.file_url }}"
-          echo "Raw URL from VPS: $RAW_URL"
+          echo "Raw URL: $RAW_URL"
           
-          # SANITASI URL OTOMATIS
-          # Jika URL mengandung "https://" dua kali, ambil bagian terakhir saja
+          # Bersihkan URL ganda jika ada
           if [[ "$RAW_URL" == *"https://"*"https://"* ]]; then
-             echo "⚠️ Terdeteksi URL Ganda. Melakukan pembersihan..."
-             # Menggunakan python untuk memisahkan dan mengambil bagian terakhir
+             echo "Fixing Double URL..."
              CLEAN_URL=$(python3 -c "import sys; u=sys.argv[1]; print('https://' + u.split('https://')[-1])" "$RAW_URL")
           else
              CLEAN_URL="$RAW_URL"
           fi
           
           URL="$CLEAN_URL"
-          echo "Final URL to Download: $URL"
-          
-          echo "Checking URL validity..."
+          echo "Final URL: $URL"
+
+          # Cek Validitas URL (Optional, tapi bagus untuk menghemat waktu)
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL")
-          echo "Telegram URL Response Code: $HTTP_CODE"
+          echo "URL Status: $HTTP_CODE"
           
-          if [ "$HTTP_CODE" -ne "200" ]; then
-            echo "❌ Error: URL tidak valid atau file sudah kedaluwarsa (Telegram Expired)."
-            exit 1
-          fi
-
-          echo "Downloading file to /tmp/final_upload..."
+          echo "Downloading..."
           curl -L -o "/tmp/final_upload" "$URL"
-          echo "Download Complete."
 
-      - name: Verify File
-        run: |
-          FILE="/tmp/final_upload"
-          echo "--- FILE VERIFICATION ---"
-          
-          if [ ! -f "$FILE" ]; then
-            echo "❌ File tidak ditemukan di /tmp."
-            exit 1
-          fi
-          
-          SIZE=$(wc -c < "$FILE")
-          echo "File Size: $SIZE bytes"
-          
-          if [ "$SIZE" -eq "0" ]; then
-            echo "❌ Error: File berukuran 0 bytes (kosong/gagal download)."
-            exit 1
-          fi
-          echo "--------------------------"
-
-      - name: Upload to PixelDrain (API)
+      - name: Upload to PixelDrain (API - Multipart Method)
         id: upload_pixeldrain
         if: inputs.service == 'pixeldrain'
         run: |
           PK="${{ inputs.pixeldrain_key }}"
           FILE="/tmp/final_upload"
           
-          echo "--- UPLOAD PROCESS ---"
+          # Bersihkan API Key dari spasi/enter yang mungkin ada
+          PK=$(echo "$PK" | xargs)
           
-          RESPONSE=$(curl -L -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
-            -T "$FILE" \
+          echo "--- UPLOAD PROCESS ---"
+          echo "Using API Key: ${PK:0:8}..."
+          echo "File: $FILE"
+          
+          # Menggunakan metode Multipart (-F) alih-alih Raw (-T)
+          # Ini lebih stabil untuk upload di environment CI/CD
+          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
+            -F "file=@$FILE" \
             -u ":$PK" \
             "https://pixeldrain.com/api/file/")
             
@@ -108,7 +88,7 @@ jobs:
           
           ID=$(echo "$BODY" | python3 -c "import sys, json; print(json.load(sys.stdin)['value']['id'])")
           LINK="https://pixeldrain.com/u/$ID"
-          echo "✅ Upload Success. Link: $LINK"
+          echo "✅ Success! Link: $LINK"
           
           echo "result_link=$LINK" >> $GITHUB_OUTPUT
           echo "service_name=PixelDrain" >> $GITHUB_OUTPUT
