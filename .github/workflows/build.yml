@@ -41,34 +41,77 @@ jobs:
           fi
           curl -L -o "/tmp/final_upload" "$CLEAN_URL"
 
-      - name: Upload to PixelDrain (Multi-Method)
+      - name: Upload to PixelDrain (Robust Parsing)
         id: upload_pixeldrain
         if: inputs.service == 'pixeldrain'
         run: |
-          pip install requests > /dev/null
+          pip install requests > /dev/null 2>&1
           PK="${{ inputs.pixeldrain_key }}"
-          PK=$(echo "$PK" | xargs)
           FILE="/tmp/final_upload"
-          SUCCESS="NO"
           
-          # Method 1: Curl Raw
-          RESP=$(curl -L -s -w "\nHTTP_STATUS:%{http_code}" -X POST -T "$FILE" -u ":$PK" "https://pixeldrain.com/api/file/")
-          CODE=$(echo "$RESP" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
-          if [ "$CODE" == "201" ]; then SUCCESS="YES"; BODY=$(echo "$RESP" | sed -e 's/HTTP_STATUS:[0-9]*$//'); fi
-
-          # Method 2: Python Requests
-          if [ "$SUCCESS" == "NO" ]; then
-            RESP=$(python3 -c "import requests; r=requests.post('https://pixeldrain.com/api/file/', auth=('', '$PK'), files={'file': open('/tmp/final_upload', 'rb')}); print(r.text if r.status_code==201 else 'FAIL')" 2>&1)
-            if [ "$RESP" != "FAIL" ]; then SUCCESS="YES"; BODY="$RESP"; fi
+          echo "Starting Upload to PixelDrain..."
+          
+          # --- ATTEMPT 1: PYTHON REQUESTS (Native) ---
+          echo "[1/2] Trying Python Requests..."
+          OUTPUT=$(python3 -c "
+import requests, sys, json
+try:
+    with open('$FILE', 'rb') as f:
+        # Upload file
+        r = requests.post('https://pixeldrain.com/api/file/', auth=('', '$PK'), files={'file': f})
+    
+    if r.status_code == 201:
+        # Kirim SUCCESS diikuti text JSON
+        print('SUCCESS|' + r.text)
+    else:
+        # Kirim FAIL diikuti status code
+        print(f'FAIL|Code {r.status_code}')
+except Exception as e:
+    print(f'FAIL|Exception {str(e)}')
+" 2>&1)
+          
+          # Parsing output Python (Format: STATUS|BODY)
+          STATUS=$(echo "$OUTPUT" | cut -d'|' -f1)
+          BODY=$(echo "$OUTPUT" | cut -d'|' -f2-)
+          
+          # --- ATTEMPT 2: CURL (Jika Python gagal) ---
+          if [ "$STATUS" != "SUCCESS" ]; then
+             echo "[2/2] Python Failed ($STATUS). Trying Curl..."
+             
+             OUTPUT=$(curl -L -s -w "\nHTTP_CODE:%{http_code}" -X POST \
+                -T "$FILE" \
+                -u ":$PK" \
+                "https://pixeldrain.com/api/file/")
+             
+             CODE=$(echo "$OUTPUT" | grep -o 'HTTP_CODE:[0-9]*' | cut -d: -f2)
+             CURL_BODY=$(echo "$OUTPUT" | sed -e 's/HTTP_CODE:[0-9]*$//')
+             
+             if [ "$CODE" == "201" ]; then
+                STATUS="SUCCESS"
+                BODY="$CURL_BODY"
+             fi
           fi
           
-          if [ "$SUCCESS" == "YES" ]; then
-             ID=$(echo "$BODY" | python3 -c "import sys, json; print(json.load(sys.stdin)['value']['id'])")
-             LINK="https://pixeldrain.com/u/$ID"
-             echo "result_link=$LINK" >> $GITHUB_OUTPUT
-             echo "service_name=PixelDrain" >> $GITHUB_OUTPUT
+          # --- FINAL PARSING (Safe Mode) ---
+          if [ "$STATUS" == "SUCCESS" ]; then
+             echo "Server Response: $BODY"
+             
+             # Gunakan .get() agar tidak crash jika struktur JSON sedikit beda
+             ID=$(echo "$BODY" | python3 -c "import sys, json; d=json.load(sys.stdin); print(d.get('value', {}).get('id', ''))" 2>&1)
+             
+             if [ -n "$ID" ]; then
+                LINK="https://pixeldrain.com/u/$ID"
+                echo "✅ Upload Success! Link: $LINK"
+                echo "result_link=$LINK" >> $GITHUB_OUTPUT
+                echo "service_name=PixelDrain" >> $GITHUB_OUTPUT
+             else
+                echo "❌ Error: Tidak bisa mengekstrak ID dari respons JSON."
+                echo "Raw JSON: $BODY"
+                exit 1
+             fi
           else
-             echo "Upload Failed"; exit 1
+             echo "❌ Upload Gagal Total. Status: $STATUS"
+             exit 1
           fi
 
       - name: Send Result to Telegram
