@@ -33,24 +33,10 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Send Download Status
+      - name: Update Status - Downloading
         run: |
-          TOKEN="${{ inputs.telegram_token }}"
-          CHAT_ID="${{ inputs.chat_id }}"
-          MSG_ID="${{ inputs.message_id }}"
-          
-          MSG="⏬ *Upload Status*%0A%0A"
-          MSG="${MSG}📄 File: \`${{ inputs.filename }}\`%0A"
-          MSG="${MSG}📦 Type: ${{ inputs.file_type }}%0A"
-          MSG="${MSG}🎯 Destination: ${{ inputs.service }}%0A%0A"
-          MSG="${MSG}📊 *Current Status:* Downloading from source%0A"
-          MSG="${MSG}▰▰▰▱▱▱▱▱▱▱ 30%%"
-          
-          curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
-            -d chat_id=$CHAT_ID \
-            -d message_id=$MSG_ID \
-            -d text="$MSG" \
-            -d parse_mode="Markdown"
+          # This step will be handled by a separate status update script
+          echo "Status update will be sent via webhook"
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -103,24 +89,10 @@ jobs:
           echo "file_path=$OUTPUT_FILE" >> $GITHUB_OUTPUT
           echo "file_size_mb=$FILE_SIZE_MB" >> $GITHUB_OUTPUT
 
-      - name: Send Upload Status
+      - name: Update Status - Uploading
         run: |
-          TOKEN="${{ inputs.telegram_token }}"
-          CHAT_ID="${{ inputs.chat_id }}"
-          MSG_ID="${{ inputs.message_id }}"
-          
-          MSG="⏫ *Upload Status*%0A%0A"
-          MSG="${MSG}📄 File: \`${{ inputs.filename }}\`%0A"
-          MSG="${MSG}📦 Type: ${{ inputs.file_type }}%0A"
-          MSG="${MSG}💾 Size: ${{ steps.download.outputs.file_size_mb }} MB%0A%0A"
-          MSG="${MSG}📊 *Current Status:* Uploading to ${{ inputs.service }}%0A"
-          MSG="${MSG}▰▰▰▰▰▰▰▱▱▱ 70%%"
-          
-          curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
-            -d chat_id=$CHAT_ID \
-            -d message_id=$MSG_ID \
-            -d text="$MSG" \
-            -d parse_mode="Markdown"
+          # Status will be updated via webhook
+          echo "Uploading to ${{ inputs.service }}"
 
       - name: Upload to PixelDrain
         id: upload_pixeldrain
@@ -200,12 +172,12 @@ jobs:
           echo "result_link=https://drive.google.com/file/d/dummy123/view" >> $GITHUB_OUTPUT
           echo "service_name=Google Drive" >> $GITHUB_OUTPUT
 
-      - name: Send Result to Telegram
+      - name: Send Result to Bot
         if: always()
         run: |
           TOKEN="${{ inputs.telegram_token }}"
           CHAT_ID="${{ inputs.chat_id }}"
-          MSG_ID="${{ inputs.message_id }}"
+          FILENAME="${{ inputs.filename }}"
           
           if [ "${{ job.status }}" == "success" ]; then
             if [ "${{ inputs.service }}" == "pixeldrain" ]; then
@@ -219,26 +191,14 @@ jobs:
                SERVICE="Google Drive"
             fi
             
-            MSG="✅ *Upload Status*%0A%0A"
-            MSG="${MSG}📄 File: \`${{ inputs.filename }}\`%0A"
-            MSG="${MSG}📦 Type: ${{ inputs.file_type }}%0A"
-            MSG="${MSG}💾 Size: ${{ steps.download.outputs.file_size_mb }} MB%0A"
-            MSG="${MSG}☁️ Service: $SERVICE%0A%0A"
-            MSG="${MSG}📊 *Current Status:* Complete!%0A"
-            MSG="${MSG}▰▰▰▰▰▰▰▰▰▰ 100%%%0A%0A"
-            MSG="${MSG}🔗 [Download Link]($LINK)"
+            # Send completion notification via webhook format
+            MSG="UPLOAD_COMPLETE|$FILENAME|$LINK|${{ steps.download.outputs.file_size_mb }}"
           else
-            MSG="❌ *Upload Status*%0A%0A"
-            MSG="${MSG}📄 File: \`${{ inputs.filename }}\`%0A"
-            MSG="${MSG}📦 Type: ${{ inputs.file_type }}%0A"
-            MSG="${MSG}☁️ Service: ${{ inputs.service }}%0A%0A"
-            MSG="${MSG}📊 *Current Status:* Failed%0A"
-            MSG="${MSG}Please try again or check logs."
+            MSG="UPLOAD_FAILED|$FILENAME"
           fi
           
-          curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
+          # Send via sendMessage with special format that bot will parse
+          curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
             -d chat_id=$CHAT_ID \
-            -d message_id=$MSG_ID \
-            -d text="$MSG" \
-            -d parse_mode="Markdown" \
-            -d disable_web_page_preview=false
+            -d text="__STATUS_UPDATE__:$MSG" \
+            -d disable_notification=true
