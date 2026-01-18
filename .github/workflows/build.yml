@@ -53,31 +53,35 @@ jobs:
           echo "Downloading..."
           curl -L -o "/tmp/final_upload" "$URL"
 
-      - name: Upload to PixelDrain (API - Multipart Method)
+      - name: Upload to PixelDrain (API - Final Fix)
         id: upload_pixeldrain
         if: inputs.service == 'pixeldrain'
         run: |
           PK="${{ inputs.pixeldrain_key }}"
           FILE="/tmp/final_upload"
           
-          # Bersihkan API Key dari spasi/enter yang mungkin ada
+          # Bersihkan API Key (hapus spasi/enter)
           PK=$(echo "$PK" | xargs)
           
           echo "--- UPLOAD PROCESS ---"
           echo "Using API Key: ${PK:0:8}..."
-          echo "File: $FILE"
+          echo "Target File: $FILE"
+          echo "File Size: $(wc -c < "$FILE") bytes"
           
-          # Menggunakan metode Multipart (-F) alih-alih Raw (-T)
-          # Ini lebih stabil untuk upload di environment CI/CD
-          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
-            -F "file=@$FILE" \
+          # UPLOAD SESUAI DOKUMENTASI PIXELDRAIN
+          # -L : WAJIB! Untuk mengikuti redirect (Error 307)
+          # -T : Mengirim data file raw
+          # -u : Basic Auth (User kosong, Pass = API Key)
+          
+          RESPONSE=$(curl -L -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
+            -T "$FILE" \
             -u ":$PK" \
             "https://pixeldrain.com/api/file/")
             
           HTTP_STATUS=$(echo "$RESPONSE" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
           BODY=$(echo "$RESPONSE" | sed -e 's/HTTP_STATUS:[0-9]*$//')
           
-          echo "Status Code: $HTTP_STATUS"
+          echo "Final Status Code: $HTTP_STATUS"
           
           if [ "$HTTP_STATUS" != "201" ]; then
             echo "❌ Upload Failed."
@@ -88,7 +92,7 @@ jobs:
           
           ID=$(echo "$BODY" | python3 -c "import sys, json; print(json.load(sys.stdin)['value']['id'])")
           LINK="https://pixeldrain.com/u/$ID"
-          echo "✅ Success! Link: $LINK"
+          echo "✅ Upload Success! Link: $LINK"
           
           echo "result_link=$LINK" >> $GITHUB_OUTPUT
           echo "service_name=PixelDrain" >> $GITHUB_OUTPUT
