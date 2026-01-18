@@ -32,15 +32,16 @@ jobs:
       - name: Download File
         id: download
         run: |
-          echo "Starting download from: ${{ inputs.file_url }}"
-          # Download file. Gunakan -L untuk mengikuti redirect.
-          # Simpan sebagai 'target_file'
+          echo "Starting download..."
+          # Download file dari URL Telegram/External
+          # Simpan dengan nama tetap 'target_file' untuk memudahkan manajemen
           curl -L -o "target_file" "${{ inputs.file_url }}"
           echo "filename=target_file" >> $GITHUB_OUTPUT
 
-      - name: Check File Size
+      - name: Check File Location & Size
         run: |
           echo "--- FILE INFO ---"
+          echo "Current Directory: $(pwd)"
           ls -lh target_file
           echo "-----------------"
 
@@ -48,27 +49,15 @@ jobs:
         id: upload_pixeldrain
         if: inputs.service == 'pixeldrain'
         run: |
-          FILENAME="${{ steps.download.outputs.filename }}"
           PK="${{ inputs.pixeldrain_key }}"
           
-          echo "--- DEBUG INFO ---"
-          # Cek apakah key terkirim dari VPS
-          if [ -z "$PK" ]; then
-             echo "❌ API KEY KOSONG! Cek config.py di VPS."
-          else
-             echo "API Key Terdeteksi. Panjang: ${#PK} karakter."
-             echo "Preview: ${PK:0:8}..."
-          fi
-          echo "-------------------"
-
           echo "--- UPLOAD PROCESS ---"
           
-          # Upload menggunakan metode dokumentasi PixelDrain
-          # -T "file"  : Mengupload file content
-          # -u ":key"  : Basic Auth (user kosong, password = API Key)
+          # Menggunakan nama file 'target_file' secara langsung
+          # Format curl sesuai dokumentasi PixelDrain: -T "namafile" -u :apikey URL
           
           RESPONSE=$(curl -L -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
-            -T "$FILENAME" \
+            -T "target_file" \
             -u ":$PK" \
             "https://pixeldrain.com/api/file/")
             
@@ -77,21 +66,19 @@ jobs:
           
           echo "Status Code: $HTTP_STATUS"
           
-          # Cek jika upload gagal (Harusnya 201 Created)
+          # Cek apakah upload sukses (201 Created)
           if [ "$HTTP_STATUS" != "201" ]; then
             echo "❌ Upload Failed."
-            echo "Server Response:"
+            echo "Server Response Body:"
             echo "$BODY"
             exit 1
           fi
           
-          # Parse JSON untuk mengambil ID
-          # Response Format: {"success":true,"value":{"id":"ABC123",...}}
+          # Parse JSON untuk mengambil ID File
           ID=$(echo "$BODY" | python3 -c "import sys, json; print(json.load(sys.stdin)['value']['id'])")
           
           LINK="https://pixeldrain.com/u/$ID"
           echo "✅ Upload Success. Link: $LINK"
-          echo "------------------------"
           
           echo "result_link=$LINK" >> $GITHUB_OUTPUT
           echo "service_name=PixelDrain" >> $GITHUB_OUTPUT
@@ -118,7 +105,7 @@ jobs:
           TOKEN="${{ inputs.telegram_token }}"
           CHAT_ID="${{ inputs.chat_id }}"
           
-          # Tentukan pesan hasil
+          # Tentukan pesan berdasarkan service
           if [ "${{ inputs.service }}" == "pixeldrain" ]; then
              LINK="${{ steps.upload_pixeldrain.outputs.result_link }}"
              if [ -z "$LINK" ]; then
@@ -138,5 +125,5 @@ jobs:
              MSG="❌ Unknown service."
           fi
           
-          # Kirim pesan balik ke user
+          # Kirim pesan ke User
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d chat_id=$CHAT_ID -d text="$MSG"
